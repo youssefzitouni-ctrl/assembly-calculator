@@ -1,0 +1,881 @@
+.intel_syntax noprefix
+
+.global itoa
+.global atoi
+.global _start
+
+
+# ================================================================
+# PROGRAM ENTRY POINT
+# ================================================================
+#
+# This program:
+#
+#   1. Checks how many command-line arguments were supplied.
+#   2. Determines whether the operation is:
+#        - Unary:  -number   or   ~number
+#        - Binary: number operator number
+#   3. Converts the input strings to integers using atoi.
+#   4. Performs the requested operation.
+#   5. Converts the result back to a string using itoa.
+#   6. Writes the result to stdout.
+#
+# argc / argv layout:
+#
+#   [rsp]       = argc
+#   [rsp+8]     = argv[0]
+#   [rsp+16]    = argv[1]
+#   [rsp+24]    = argv[2]
+#   [rsp+32]    = argv[3]
+#
+# ================================================================
+
+
+_start:
+
+    # ------------------------------------------------------------
+    # Determine the number of command-line arguments
+    # ------------------------------------------------------------
+
+    cmp qword ptr [rsp], 4
+    je foarg
+
+    cmp qword ptr [rsp], 3
+    je toarg
+
+    # Invalid number of arguments
+    call dec
+
+
+# ================================================================
+# UNARY OPERATION DISPATCH
+# ================================================================
+#
+# Handles:
+#
+#       -number
+#       ~number
+#
+# argv[1] = operator
+# argv[2] = number
+#
+# ================================================================
+
+toarg:
+
+    # r15 = argv[1]
+    mov r15, qword ptr [rsp+16]
+
+    # Check for negation: "-number"
+    cmp byte ptr [r15], '-'
+    je negator
+
+    # Check for bitwise NOT: "~number"
+    cmp byte ptr [r15], '~'
+    je prox
+
+    # Invalid unary operation
+    call dec
+
+
+# ================================================================
+# BINARY OPERATION DISPATCH
+# ================================================================
+#
+# Handles:
+#
+#       number + number
+#       number * number
+#       number & number
+#       number | number
+#       number ^ number
+#       number - number
+#
+# argv[1] = first number
+# argv[2] = operator
+# argv[3] = second number
+#
+# ================================================================
+
+foarg:
+
+    # r15 = argv[2] = operator
+    mov r15, qword ptr [rsp+24]
+
+    # ------------------------------------------------------------
+    # Addition
+    # ------------------------------------------------------------
+
+    cmp byte ptr [r15], '+'
+    je addit
+
+    # ------------------------------------------------------------
+    # Multiplication
+    # ------------------------------------------------------------
+
+    cmp byte ptr [r15], '*'
+    je mult
+
+    # ------------------------------------------------------------
+    # Bitwise AND
+    # ------------------------------------------------------------
+
+    cmp byte ptr [r15], '&'
+    je an
+
+    # ------------------------------------------------------------
+    # Bitwise OR
+    # ------------------------------------------------------------
+
+    cmp byte ptr [r15], '|'
+    je orz
+
+    # ------------------------------------------------------------
+    # Bitwise XOR
+    # ------------------------------------------------------------
+
+    cmp byte ptr [r15], '^'
+    je xo
+
+    # ------------------------------------------------------------
+    # Subtraction
+    # ------------------------------------------------------------
+
+    cmp byte ptr [r15], '-'
+    jne dec
+
+
+    # ============================================================
+    # SUBTRACTION
+    # ============================================================
+
+    # Convert first number
+    mov rdi, qword ptr [rsp+16]
+    call atoi
+    mov r13, rax
+
+    # Convert second number
+    mov rdi, qword ptr [rsp+32]
+    call atoi
+    mov r14, rax
+
+    # r13 = first number - second number
+    sub r13, r14
+
+    # Pass result to itoa
+    mov rdi, r13
+
+    # Reserve output buffer on the stack
+    sub rsp, 32
+    mov rsi, rsp
+    mov r14, rsi
+
+    # Convert integer to string
+    call itoa
+
+    # Restore output-buffer pointer
+    mov rsi, r14
+
+    # Print result
+    call wr
+
+    # Exit successfully
+    call ex
+
+
+# ================================================================
+# ERROR EXIT
+# ================================================================
+#
+# Exits with status code 2.
+#
+# ================================================================
+
+dec:
+
+    mov rax, 60          # sys_exit
+    mov rdi, 2           # exit status = 2
+    syscall
+
+
+# ================================================================
+# WRITE RESULT TO STDOUT
+# ================================================================
+#
+# Input:
+#   rsi = address of string
+#   rax = string length
+#
+# The length returned by itoa is moved into rdx.
+#
+# ================================================================
+
+wr:
+
+    mov rdx, rax         # write length
+    mov rdi, 1           # stdout
+    mov rax, 1           # sys_write
+    syscall
+
+    ret
+
+
+# ================================================================
+# NORMAL PROGRAM EXIT
+# ================================================================
+
+ex:
+
+    mov rax, 60          # sys_exit
+    mov rdi, 0           # exit status = 0
+    syscall
+
+    ret
+
+
+
+# ================================================================
+# ITOA — INTEGER TO ASCII
+# ================================================================
+#
+# Converts the signed integer in rdi into an ASCII string.
+#
+# Input:
+#   rdi = integer
+#   rsi = destination buffer
+#
+# Output:
+#   rax = number of characters written
+#
+# Example:
+#
+#   rdi = 123
+#
+#   buffer becomes:
+#       "123"
+#
+#   rax = 3
+#
+# Negative numbers receive a '-' at the beginning.
+#
+# ================================================================
+
+itoa:
+
+    # ------------------------------------------------------------
+    # Reset working registers
+    # ------------------------------------------------------------
+
+    xor r8, r8
+    xor r9, r9
+    xor r10, r10
+    xor rdx, rdx
+    xor rcx, rcx
+
+    # Copy input number into rax
+    mov rax, rdi
+
+
+    # ------------------------------------------------------------
+    # Special case: zero
+    # ------------------------------------------------------------
+
+    cmp rax, 0
+    je zero
+
+
+    # ------------------------------------------------------------
+    # Start with one digit
+    # ------------------------------------------------------------
+
+    mov r9, 1
+
+
+    # ------------------------------------------------------------
+    # Check whether number is negative
+    # ------------------------------------------------------------
+
+    cmp rax, 0
+    jl negate
+
+
+    # Positive number
+    call loop
+
+    ret
+
+
+# ================================================================
+# ITOA — HANDLE NEGATIVE NUMBER
+# ================================================================
+
+negate:
+
+    # Convert negative number to positive
+    neg rax
+
+    # Write '-' at beginning of output
+    mov byte ptr [rsi], '-'
+
+    # Remember that there is one extra character
+    mov r10, 1
+
+    # Extract and print digits
+    call loop
+
+    ret
+
+
+# ================================================================
+# ITOA — ZERO
+# ================================================================
+
+zero:
+
+    mov byte ptr [rsi], '0'
+
+    # Length = 1
+    mov rax, 1
+
+    ret
+
+
+
+# ================================================================
+# ITOA — DIVIDE NUMBER INTO DIGITS
+# ================================================================
+#
+# Repeatedly divides the number by 10.
+#
+# Example:
+#
+#   123 / 10 -> quotient 12, remainder 3
+#    12 / 10 -> quotient  1, remainder 2
+#     1 / 10 -> quotient  0, remainder 1
+#
+# The remainders are pushed onto the stack:
+#
+#   3
+#   2
+#   1
+#
+# They can then be popped in reverse order to produce:
+#
+#   123
+#
+# r9 = number of digits
+#
+# ================================================================
+
+loop:
+
+    # Clear upper half of dividend
+    xor rdx, rdx
+
+    # Divisor = 10
+    mov rcx, 10
+
+    # Divide RDX:RAX by RCX
+    div rcx
+
+    # Save remainder (one digit)
+    push rdx
+
+    # Are there more digits?
+    cmp rax, 0
+    je prntr
+
+    # Another digit exists
+    inc r9
+
+    jmp loop
+
+
+
+# ================================================================
+# ITOA — PRINT DIGITS FROM STACK
+# ================================================================
+#
+# The digits were pushed in reverse order.
+# Pop them to reconstruct the number from left to right.
+#
+# Example:
+#
+#   Stack:
+#       1
+#       2
+#       3
+#
+# Pop order:
+#       1 -> 2 -> 3
+#
+# ================================================================
+
+prntr:
+
+    xor r8, r8
+
+    # If number was negative,
+    # skip over the '-' already written.
+    cmp r10, 1
+    jne prnt
+
+    inc rsi
+
+
+prnt:
+
+    # Get next digit
+    pop rax
+
+    # Convert numerical digit to ASCII
+    add al, '0'
+
+    # Store digit in output buffer
+    mov byte ptr [rsi + r8], al
+
+    # Move to next output position
+    inc r8
+
+    # Have all digits been printed?
+    cmp r8, r9
+    jne prnt
+
+
+    # ------------------------------------------------------------
+    # Return total string length
+    #
+    # length = number of digits + optional '-'
+    # ------------------------------------------------------------
+
+    mov rax, r9
+    add rax, r10
+
+    ret
+
+
+
+# ================================================================
+# ATOI — ASCII TO INTEGER
+# ================================================================
+#
+# Converts a decimal ASCII string into a signed integer.
+#
+# Input:
+#   rdi = address of string
+#
+# Output:
+#   rax = integer
+#
+# Examples:
+#
+#   "123"  -> 123
+#   "-123" -> -123
+#
+# ================================================================
+
+atoi:
+
+    # Accumulator starts at zero
+    xor rdx, rdx
+
+    # Check for negative sign
+    cmp byte ptr [rdi], '-'
+    je rem
+
+    # Positive number
+    call atoi_f
+
+    ret
+
+
+
+# ================================================================
+# ATOI — HANDLE NEGATIVE NUMBER
+# ================================================================
+
+rem:
+
+    # Skip '-'
+    inc rdi
+
+    # Convert remaining digits
+    call atoi_f
+
+    # Make result negative
+    neg rax
+
+    ret
+
+
+
+# ================================================================
+# ATOI — PROCESS EACH DIGIT
+# ================================================================
+#
+# Builds the number using:
+#
+#       result = result * 10 + digit
+#
+# Example for "123":
+#
+#       0 * 10 + 1 = 1
+#       1 * 10 + 2 = 12
+#      12 * 10 + 3 = 123
+#
+# rdx = accumulator
+#
+# ================================================================
+
+atoi_f:
+
+    # ------------------------------------------------------------
+    # Check if current character is <= '9'
+    # ------------------------------------------------------------
+
+    cmp byte ptr [rdi], '9'
+    ja don
+
+
+    # ------------------------------------------------------------
+    # Check if current character is >= '0'
+    # ------------------------------------------------------------
+
+    cmp byte ptr [rdi], '0'
+    jb don
+
+
+    # ------------------------------------------------------------
+    # Convert ASCII digit into numerical digit
+    # ------------------------------------------------------------
+
+    call atoi_digit
+
+
+    # ------------------------------------------------------------
+    # accumulator = accumulator * 10 + digit
+    # ------------------------------------------------------------
+
+    imul rdx, 10
+    add rdx, rax
+
+    # Move to next character
+    inc rdi
+
+    # Process next digit
+    call atoi_f
+
+    ret
+
+
+
+# ================================================================
+# ATOI — FINISH CONVERSION
+# ================================================================
+
+don:
+
+    # Return accumulated number
+    mov rax, rdx
+
+    ret
+
+
+
+# ================================================================
+# ATOI_DIGIT — ASCII DIGIT TO INTEGER
+# ================================================================
+#
+# Converts one ASCII digit:
+#
+#       '0' -> 0
+#       '1' -> 1
+#       ...
+#       '9' -> 9
+#
+# Input:
+#   rdi = address of ASCII character
+#
+# Output:
+#   rax = numerical digit
+#
+# ================================================================
+
+atoi_digit:
+
+    # Load character
+    movsx rax, byte ptr [rdi]
+
+    # ASCII '0' = 48
+    sub rax, 48
+
+    ret
+
+
+
+# ================================================================
+# ADDITION
+# ================================================================
+#
+#       number1 + number2
+#
+# ================================================================
+
+addit:
+
+    # Convert first number
+    mov rdi, qword ptr [rsp+16]
+    call atoi
+    mov r13, rax
+
+    # Convert second number
+    mov rdi, qword ptr [rsp+32]
+    call atoi
+    mov r14, rax
+
+    # Perform addition
+    add r13, r14
+
+    # Convert result to string
+    mov rdi, r13
+    sub rsp, 32
+    mov rsi, rsp
+
+    call itoa
+
+    # Print result
+    call wr
+
+    # Exit
+    call ex
+
+
+
+# ================================================================
+# MULTIPLICATION
+# ================================================================
+#
+#       number1 * number2
+#
+# ================================================================
+
+mult:
+
+    # Convert first number
+    mov rdi, qword ptr [rsp+16]
+    call atoi
+    mov r13, rax
+
+    # Convert second number
+    mov rdi, qword ptr [rsp+32]
+    call atoi
+    mov r14, rax
+
+    # Perform multiplication
+    imul r13, r14
+
+    # Convert result to string
+    mov rdi, r13
+    sub rsp, 32
+    mov rsi, rsp
+
+    call itoa
+
+    # Print result
+    call wr
+
+    # Exit
+    call ex
+
+
+
+# ================================================================
+# BITWISE AND
+# ================================================================
+#
+#       number1 & number2
+#
+# ================================================================
+
+an:
+
+    # Convert first number
+    mov rdi, qword ptr [rsp+16]
+    call atoi
+    mov r13, rax
+
+    # Convert second number
+    mov rdi, qword ptr [rsp+32]
+    call atoi
+    mov r14, rax
+
+    # Perform AND
+    and r13, r14
+
+    # Convert result to string
+    mov rdi, r13
+    sub rsp, 32
+    mov rsi, rsp
+
+    call itoa
+
+    # Print result
+    call wr
+
+    # Exit
+    call ex
+
+
+
+# ================================================================
+# BITWISE OR
+# ================================================================
+#
+#       number1 | number2
+#
+# ================================================================
+
+orz:
+
+    # Convert first number
+    mov rdi, qword ptr [rsp+16]
+    call atoi
+    mov r13, rax
+
+    # Convert second number
+    mov rdi, qword ptr [rsp+32]
+    call atoi
+    mov r14, rax
+
+    # Perform OR
+    or r13, r14
+
+    # Convert result to string
+    mov rdi, r13
+    sub rsp, 32
+    mov rsi, rsp
+
+    call itoa
+
+    # Print result
+    call wr
+
+    # Exit
+    call ex
+
+
+
+# ================================================================
+# BITWISE XOR
+# ================================================================
+#
+#       number1 ^ number2
+#
+# ================================================================
+
+xo:
+
+    # Convert first number
+    mov rdi, qword ptr [rsp+16]
+    call atoi
+    mov r13, rax
+
+    # Convert second number
+    mov rdi, qword ptr [rsp+32]
+    call atoi
+    mov r14, rax
+
+    # Perform XOR
+    xor r13, r14
+
+    # Convert result to string
+    mov rdi, r13
+
+    sub rsp, 32
+    mov rsi, rsp
+
+    call itoa
+
+    # Print result
+    call wr
+
+    # Exit
+    call ex
+
+
+
+# ================================================================
+# UNARY NEGATION
+# ================================================================
+#
+#       -number
+#
+# Converts the number using atoi, then changes its sign.
+#
+# ================================================================
+
+negator:
+
+    # Convert operand
+    mov rdi, qword ptr [rsp+24]
+    call atoi
+    mov r13, rax
+
+    # Negate result
+    neg r13
+
+    # Convert result to string
+    mov rdi, r13
+    sub rsp, 32
+    mov rsi, rsp
+    mov r14, rsi
+
+    call itoa
+
+    # Restore output-buffer pointer
+    mov rsi, r14
+
+    # Print result
+    call wr
+
+    # Exit
+    call ex
+
+
+
+# ================================================================
+# BITWISE NOT
+# ================================================================
+#
+#       ~number
+#
+# Flips every bit of the operand.
+#
+# ================================================================
+
+prox:
+
+    # Convert operand
+    mov rdi, qword ptr [rsp+24]
+    call atoi
+    mov r13, rax
+
+    # Flip every bit
+    not r13
+
+    # Convert result to string
+    mov rdi, r13
+    sub rsp, 32
+    mov rsi, rsp
+    mov r14, rsi
+
+    call itoa
+
+    # Restore output-buffer pointer
+    mov rsi, r14
+
+    # Print result
+    call wr
+
+    # Exit
+    call ex
